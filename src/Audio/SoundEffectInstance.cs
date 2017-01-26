@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -73,6 +73,14 @@ namespace Microsoft.Xna.Framework.Audio
 			}
 			set
 			{
+				if (INTERNAL_isXACTSource)
+				{
+					value = MathHelper.Clamp(value, -2.0f, 2.0f);
+				}
+				else
+				{
+					value = MathHelper.Clamp(value, -1.0f, 1.0f);
+				}
 				INTERNAL_pitch = value;
 				if (INTERNAL_alSource != null)
 				{
@@ -114,6 +122,10 @@ namespace Microsoft.Xna.Framework.Audio
 			}
 			set
 			{
+				if (!INTERNAL_isXACTSource)
+				{
+					value = MathHelper.Clamp(value, 0.0f, 1.0f);
+				}
 				INTERNAL_volume = value;
 				if (INTERNAL_alSource != null)
 				{
@@ -282,7 +294,10 @@ namespace Microsoft.Xna.Framework.Audio
 			{
 				srcBuf = INTERNAL_parentEffect.INTERNAL_buffer;
 			}
-			INTERNAL_alSource = AudioDevice.ALDevice.GenSource(srcBuf);
+			INTERNAL_alSource = AudioDevice.ALDevice.GenSource(
+				srcBuf,
+				INTERNAL_isXACTSource
+			);
 			if (INTERNAL_alSource == null)
 			{
 				FNALoggerEXT.LogWarn("AL SOURCE WAS NOT AVAILABLE, SKIPPING.");

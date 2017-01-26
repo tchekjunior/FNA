@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -399,12 +399,14 @@ namespace Microsoft.Xna.Framework.Graphics
 		private uint targetFramebuffer = 0;
 		private uint resolveFramebufferRead = 0;
 		private uint resolveFramebufferDraw = 0;
-		private uint[] currentAttachments;
-		private GLenum[] currentAttachmentTypes;
+		private readonly uint[] currentAttachments;
+		private readonly GLenum[] currentAttachmentTypes;
 		private int currentDrawBuffers;
-		private GLenum[] drawBuffersArray;
+		private readonly GLenum[] drawBuffersArray;
 		private uint currentRenderbuffer;
 		private DepthFormat currentDepthStencilFormat;
+		private readonly uint[] attachments;
+		private readonly GLenum[] attachmentTypes;
 
 		#endregion
 
@@ -422,13 +424,15 @@ namespace Microsoft.Xna.Framework.Graphics
 
 		#endregion
 
-		#region Faux-Backbuffer Variable
+		#region Faux-Backbuffer Variables
 
 		public IGLBackbuffer Backbuffer
 		{
 			get;
 			private set;
 		}
+
+		private GLenum backbufferScaleMode;
 
 		#endregion
 
@@ -581,6 +585,11 @@ namespace Microsoft.Xna.Framework.Graphics
 			);
 			MojoShader.MOJOSHADER_glMakeContextCurrent(shaderContext);
 
+			// Some users might want pixely upscaling...
+			backbufferScaleMode = Environment.GetEnvironmentVariable(
+				"FNA_OPENGL_BACKBUFFER_SCALE_NEAREST"
+			) == "1" ? GLenum.GL_NEAREST : GLenum.GL_LINEAR;
+
 			// Print GL information
 			FNALoggerEXT.LogInfo("IGLDevice: ModernGLDevice");
 			FNALoggerEXT.LogInfo("OpenGL Device: " + glGetString(GLenum.GL_RENDERER));
@@ -647,6 +656,10 @@ namespace Microsoft.Xna.Framework.Graphics
 			// Initialize texture collection array
 			int numSamplers;
 			glGetIntegerv(GLenum.GL_MAX_TEXTURE_IMAGE_UNITS, out numSamplers);
+			numSamplers = Math.Min(
+				numSamplers,
+				GraphicsDevice.MAX_TEXTURE_SAMPLERS + GraphicsDevice.MAX_VERTEXTEXTURE_SAMPLERS
+			);
 			Textures = new OpenGLTexture[numSamplers];
 			Samplers = new uint[numSamplers];
 			SamplersU = new TextureAddressMode[numSamplers];
@@ -676,6 +689,10 @@ namespace Microsoft.Xna.Framework.Graphics
 			// Initialize vertex attribute state arrays
 			int numAttributes;
 			glGetIntegerv(GLenum.GL_MAX_VERTEX_ATTRIBS, out numAttributes);
+			numAttributes = Math.Min(
+				numAttributes,
+				GraphicsDevice.MAX_VERTEX_ATTRIBUTES
+			);
 			attributes = new VertexAttribute[numAttributes];
 			attributeEnabled = new bool[numAttributes];
 			previousAttributeEnabled = new bool[numAttributes];
@@ -693,6 +710,12 @@ namespace Microsoft.Xna.Framework.Graphics
 			// Initialize render target FBO and state arrays
 			int numAttachments;
 			glGetIntegerv(GLenum.GL_MAX_DRAW_BUFFERS, out numAttachments);
+			numAttachments = Math.Min(
+				numAttachments,
+				GraphicsDevice.MAX_RENDERTARGET_BINDINGS
+			);
+			attachments = new uint[numAttachments];
+			attachmentTypes = new GLenum[numAttachments];
 			currentAttachments = new uint[numAttachments];
 			currentAttachmentTypes = new GLenum[numAttachments];
 			drawBuffersArray = new GLenum[numAttachments];
@@ -899,7 +922,7 @@ namespace Microsoft.Xna.Framework.Graphics
 					srcX, srcY, srcW, srcH,
 					dstX, dstY, dstW, dstH,
 					GLenum.GL_COLOR_BUFFER_BIT,
-					GLenum.GL_LINEAR
+					backbufferScaleMode
 				);
 
 				if (scissorTestEnable)
@@ -2601,7 +2624,7 @@ namespace Microsoft.Xna.Framework.Graphics
 			ForceToMainThread(() => {
 #endif
 
-			if (ReadTargetIfApplicable(
+			if (level == 0 && ReadTargetIfApplicable(
 				texture,
 				width,
 				height,
@@ -3240,8 +3263,6 @@ namespace Microsoft.Xna.Framework.Graphics
 			}
 
 			int i;
-			uint[] attachments = new uint[renderTargets.Length];
-			GLenum[] attachmentTypes = new GLenum[renderTargets.Length];
 			for (i = 0; i < renderTargets.Length; i += 1)
 			{
 				IGLRenderbuffer colorBuffer = (renderTargets[i].RenderTarget as IRenderTarget).ColorBuffer;
@@ -3265,7 +3286,7 @@ namespace Microsoft.Xna.Framework.Graphics
 			}
 
 			// Update the color attachments, DrawBuffers state
-			for (i = 0; i < attachments.Length; i += 1)
+			for (i = 0; i < renderTargets.Length; i += 1)
 			{
 				if (attachments[i] != currentAttachments[i])
 				{
@@ -3355,14 +3376,14 @@ namespace Microsoft.Xna.Framework.Graphics
 				}
 				i += 1;
 			}
-			if (attachments.Length != currentDrawBuffers)
+			if (renderTargets.Length != currentDrawBuffers)
 			{
 				glNamedFramebufferDrawBuffers(
 					targetFramebuffer,
-					attachments.Length,
+					renderTargets.Length,
 					drawBuffersArray
 				);
-				currentDrawBuffers = attachments.Length;
+				currentDrawBuffers = renderTargets.Length;
 			}
 
 			// Update the depth/stencil attachment
@@ -3497,7 +3518,8 @@ namespace Microsoft.Xna.Framework.Graphics
 				GLenum.GL_RED,				// SurfaceFormat.HalfSingle
 				GLenum.GL_RG,				// SurfaceFormat.HalfVector2
 				GLenum.GL_RGBA,				// SurfaceFormat.HalfVector4
-				GLenum.GL_RGBA				// SurfaceFormat.HdrBlendable
+				GLenum.GL_RGBA,				// SurfaceFormat.HdrBlendable
+				GLenum.GL_BGRA				// SurfaceFormat.ColorBgraEXT
 			};
 
 			public static readonly GLenum[] TextureInternalFormat = new GLenum[]
@@ -3521,7 +3543,8 @@ namespace Microsoft.Xna.Framework.Graphics
 				GLenum.GL_R16F,					// SurfaceFormat.HalfSingle
 				GLenum.GL_RG16F,				// SurfaceFormat.HalfVector2
 				GLenum.GL_RGBA16F,				// SurfaceFormat.HalfVector4
-				GLenum.GL_RGBA16F				// SurfaceFormat.HdrBlendable
+				GLenum.GL_RGBA16F,				// SurfaceFormat.HdrBlendable
+				GLenum.GL_RGBA8,				// SurfaceFormat.ColorBgraEXT
 			};
 
 			public static readonly GLenum[] TextureDataType = new GLenum[]
@@ -3545,7 +3568,8 @@ namespace Microsoft.Xna.Framework.Graphics
 				GLenum.GL_HALF_FLOAT,				// SurfaceFormat.HalfSingle
 				GLenum.GL_HALF_FLOAT,				// SurfaceFormat.HalfVector2
 				GLenum.GL_HALF_FLOAT,				// SurfaceFormat.HalfVector4
-				GLenum.GL_HALF_FLOAT				// SurfaceFormat.HdrBlendable
+				GLenum.GL_HALF_FLOAT,				// SurfaceFormat.HdrBlendable
+				GLenum.GL_UNSIGNED_BYTE,			// SurfaceFormat.ColorBgraEXT
 			};
 
 			public static readonly GLenum[] BlendMode = new GLenum[]

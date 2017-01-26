@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -174,6 +174,13 @@ namespace Microsoft.Xna.Framework.Audio
 			AL10.alListenerf(AL10.AL_GAIN, 1.0f);
 
 			EFX.alGenFilters(1, out INTERNAL_alFilter);
+
+			// FIXME: Remove for FNA 16.11! -flibit
+			if (!AL10.alIsExtensionPresent("AL_SOFT_gain_clamp_ex"))
+			{
+				FNALoggerEXT.LogWarn("AL_SOFT_gain_clamp_ex not found!");
+				FNALoggerEXT.LogWarn("Update your OpenAL Soft library!");
+			}
 		}
 
 		#endregion
@@ -501,7 +508,7 @@ namespace Microsoft.Xna.Framework.Audio
 			return new OpenALSource(result);
 		}
 
-		public IALSource GenSource(IALBuffer buffer)
+		public IALSource GenSource(IALBuffer buffer, bool isXACT)
 		{
 			uint result;
 			AL10.alGenSources(1, out result);
@@ -522,6 +529,14 @@ namespace Microsoft.Xna.Framework.Audio
 				AL10.AL_REFERENCE_DISTANCE,
 				AudioDevice.DistanceScale
 			);
+			if (isXACT)
+			{
+				AL10.alSourcef(
+					result,
+					AL10.AL_MAX_GAIN,
+					AudioDevice.MAX_GAIN_VALUE
+				);
+			}
 #if VERBOSE_AL_DEBUGGING
 			CheckALError();
 #endif
@@ -1032,7 +1047,7 @@ namespace Microsoft.Xna.Framework.Audio
 			EFX.alEffectf(
 				(reverb as OpenALReverb).EffectHandle,
 				EFX.AL_EAXREVERB_GAINHF,
-				XACTCalculator.CalculateAmplitudeRatio(
+				XACTCalculator.CalculateReverbAmplitudeRatio(
 					value - 8.0f
 				)
 			);
@@ -1080,7 +1095,7 @@ namespace Microsoft.Xna.Framework.Audio
 				(reverb as OpenALReverb).EffectHandle,
 				EFX.AL_EAXREVERB_REFLECTIONS_GAIN,
 				Math.Min(
-					XACTCalculator.CalculateAmplitudeRatio(value),
+					XACTCalculator.CalculateReverbAmplitudeRatio(value),
 					3.16f
 				)
 			);
@@ -1096,7 +1111,7 @@ namespace Microsoft.Xna.Framework.Audio
 				(reverb as OpenALReverb).EffectHandle,
 				EFX.AL_EAXREVERB_GAIN,
 				Math.Min(
-					XACTCalculator.CalculateAmplitudeRatio(value),
+					XACTCalculator.CalculateReverbAmplitudeRatio(value),
 					1.0f
 				)
 			);

@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -84,6 +84,7 @@ namespace Microsoft.Xna.Framework.Graphics
 				case SurfaceFormat.HalfVector2:
 				case SurfaceFormat.NormalizedByte4:
 				case SurfaceFormat.Rgba1010102:
+				case SurfaceFormat.ColorBgraEXT:
 					return 4;
 				case SurfaceFormat.HalfVector4:
 				case SurfaceFormat.Rgba64:

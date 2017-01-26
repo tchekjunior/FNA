@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -181,6 +181,8 @@ namespace Microsoft.Xna.Framework.Media
 				(int) fileInfo.rate,
 				(AudioChannels) fileInfo.channels
 			);
+			// FIXME: I need this to bypass XNA's gain clamp... -flibit
+			soundStream.INTERNAL_isXACTSource = true;
 
 			// FIXME: 60 is arbitrary for a 60Hz game -flibit
 			chunkSize = (int) (fileInfo.rate * fileInfo.channels / 60);

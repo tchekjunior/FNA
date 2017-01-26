@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -27,17 +27,19 @@ namespace Microsoft.Xna.Framework.Audio
 			 */
 			return (
 				(3969.0 * Math.Log10(binaryValue / 28240.0)) + 8715.0
-			) / 100.0;
+			);
 		}
 
+		// Note: This takes 'decibels * 100' as input!
 		public static float CalculateAmplitudeRatio(double decibel)
 		{
-			return (float) Math.Pow(10, decibel / 20.0);
+			return (float) Math.Pow(10, decibel / 2000.0);
 		}
 
-		public static float CalculateVolume(byte binaryValue)
+		// Interestingly, Reverb gains are stored as floats without the x100!
+		public static float CalculateReverbAmplitudeRatio(float decibel)
 		{
-			return CalculateAmplitudeRatio(ParseDecibel(binaryValue));
+			return (float) Math.Pow(10, decibel / 20.0f);
 		}
 	}
 
@@ -225,6 +227,8 @@ namespace Microsoft.Xna.Framework.Audio
 			Parameter = (RPCParameter) rpcParameter;
 			Points = rpcPoints;
 		}
+
+		public RPCPoint LastPoint { get { return Points[Points.Length - 1]; } }
 
 		public float CalculateRPC(float varInput)
 		{

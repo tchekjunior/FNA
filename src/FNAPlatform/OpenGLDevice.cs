@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -406,12 +406,14 @@ namespace Microsoft.Xna.Framework.Graphics
 		private uint targetFramebuffer = 0;
 		private uint resolveFramebufferRead = 0;
 		private uint resolveFramebufferDraw = 0;
-		private uint[] currentAttachments;
-		private GLenum[] currentAttachmentTypes;
+		private readonly uint[] currentAttachments;
+		private readonly GLenum[] currentAttachmentTypes;
 		private int currentDrawBuffers;
-		private GLenum[] drawBuffersArray;
+		private readonly GLenum[] drawBuffersArray;
 		private uint currentRenderbuffer;
 		private DepthFormat currentDepthStencilFormat;
+		private readonly uint[] attachments;
+		private readonly GLenum[] attachmentTypes;
 
 		#endregion
 
@@ -429,13 +431,15 @@ namespace Microsoft.Xna.Framework.Graphics
 
 		#endregion
 
-		#region Faux-Backbuffer Variable
+		#region Faux-Backbuffer Variables
 
 		public IGLBackbuffer Backbuffer
 		{
 			get;
 			private set;
 		}
+
+		private GLenum backbufferScaleMode;
 
 		#endregion
 
@@ -537,7 +541,7 @@ namespace Microsoft.Xna.Framework.Graphics
 
 		#region Private Profile-specific Variables
 
-		private bool useES2;
+		private bool useES3;
 		private bool useCoreProfile;
 		private uint vao;
 
@@ -564,9 +568,9 @@ namespace Microsoft.Xna.Framework.Graphics
 
 			// Check for a possible ES context
 			int flags;
-			int es2Flag = (int) SDL.SDL_GLprofile.SDL_GL_CONTEXT_PROFILE_ES;
+			int es3Flag = (int) SDL.SDL_GLprofile.SDL_GL_CONTEXT_PROFILE_ES;
 			SDL.SDL_GL_GetAttribute(SDL.SDL_GLattr.SDL_GL_CONTEXT_PROFILE_MASK, out flags);
-			useES2 = (flags & es2Flag) == es2Flag;
+			useES3 = (flags & es3Flag) == es3Flag;
 
 			// Check for a possible Core context
 			int coreFlag = (int) SDL.SDL_GLprofile.SDL_GL_CONTEXT_PROFILE_CORE;
@@ -596,6 +600,11 @@ namespace Microsoft.Xna.Framework.Graphics
 				IntPtr.Zero
 			);
 			MojoShader.MOJOSHADER_glMakeContextCurrent(shaderContext);
+
+			// Some users might want pixely upscaling...
+			backbufferScaleMode = Environment.GetEnvironmentVariable(
+				"FNA_OPENGL_BACKBUFFER_SCALE_NEAREST"
+			) == "1" ? GLenum.GL_NEAREST : GLenum.GL_LINEAR;
 
 			// Print GL information
 			FNALoggerEXT.LogInfo("IGLDevice: OpenGLDevice");
@@ -672,6 +681,10 @@ namespace Microsoft.Xna.Framework.Graphics
 			// Initialize texture collection array
 			int numSamplers;
 			glGetIntegerv(GLenum.GL_MAX_TEXTURE_IMAGE_UNITS, out numSamplers);
+			numSamplers = Math.Min(
+				numSamplers,
+				GraphicsDevice.MAX_TEXTURE_SAMPLERS + GraphicsDevice.MAX_VERTEXTEXTURE_SAMPLERS
+			);
 			Textures = new OpenGLTexture[numSamplers];
 			for (int i = 0; i < numSamplers; i += 1)
 			{
@@ -682,6 +695,10 @@ namespace Microsoft.Xna.Framework.Graphics
 			// Initialize vertex attribute state arrays
 			int numAttributes;
 			glGetIntegerv(GLenum.GL_MAX_VERTEX_ATTRIBS, out numAttributes);
+			numAttributes = Math.Min(
+				numAttributes,
+				GraphicsDevice.MAX_VERTEX_ATTRIBUTES
+			);
 			attributes = new VertexAttribute[numAttributes];
 			attributeEnabled = new bool[numAttributes];
 			previousAttributeEnabled = new bool[numAttributes];
@@ -699,6 +716,12 @@ namespace Microsoft.Xna.Framework.Graphics
 			// Initialize render target FBO and state arrays
 			int numAttachments;
 			glGetIntegerv(GLenum.GL_MAX_DRAW_BUFFERS, out numAttachments);
+			numAttachments = Math.Min(
+				numAttachments,
+				GraphicsDevice.MAX_RENDERTARGET_BINDINGS
+			);
+			attachments = new uint[numAttachments];
+			attachmentTypes = new GLenum[numAttachments];
 			currentAttachments = new uint[numAttachments];
 			currentAttachmentTypes = new GLenum[numAttachments];
 			drawBuffersArray = new GLenum[numAttachments];
@@ -917,7 +940,7 @@ namespace Microsoft.Xna.Framework.Graphics
 					srcX, srcY, srcW, srcH,
 					dstX, dstY, dstW, dstH,
 					GLenum.GL_COLOR_BUFFER_BIT,
-					GLenum.GL_LINEAR
+					backbufferScaleMode
 				);
 
 				BindFramebuffer(0);
@@ -1675,7 +1698,7 @@ namespace Microsoft.Xna.Framework.Graphics
 			}
 			if (sampler.MipMapLevelOfDetailBias != tex.LODBias)
 			{
-				System.Diagnostics.Debug.Assert(!useES2);
+				System.Diagnostics.Debug.Assert(!useES3);
 				tex.LODBias = sampler.MipMapLevelOfDetailBias;
 				glTexParameterf(
 					tex.Target,
@@ -2374,7 +2397,7 @@ namespace Microsoft.Xna.Framework.Graphics
 				GLenum.GL_TEXTURE_BASE_LEVEL,
 				result.MaxMipmapLevel
 			);
-			if (!useES2)
+			if (!useES3)
 			{
 				glTexParameterf(
 					result.Target,
@@ -2796,7 +2819,7 @@ namespace Microsoft.Xna.Framework.Graphics
 			ForceToMainThread(() => {
 #endif
 
-			if (ReadTargetIfApplicable(
+			if (level == 0 && ReadTargetIfApplicable(
 				texture,
 				width,
 				height,
@@ -2821,7 +2844,7 @@ namespace Microsoft.Xna.Framework.Graphics
 				// Just throw the whole texture into the user array.
 				glGetTexImage(
 					GLenum.GL_TEXTURE_2D,
-					0,
+					level,
 					glFormat,
 					XNAToGL.TextureDataType[(int) format],
 					data
@@ -2833,7 +2856,7 @@ namespace Microsoft.Xna.Framework.Graphics
 				IntPtr texData = Marshal.AllocHGlobal(width * height * elementSizeInBytes);
 				glGetTexImage(
 					GLenum.GL_TEXTURE_2D,
-					0,
+					level,
 					glFormat,
 					XNAToGL.TextureDataType[(int) format],
 					texData
@@ -2920,7 +2943,7 @@ namespace Microsoft.Xna.Framework.Graphics
 				// Just throw the whole texture into the user array.
 				glGetTexImage(
 					GLenum.GL_TEXTURE_CUBE_MAP_POSITIVE_X + (int) cubeMapFace,
-					0,
+					level,
 					glFormat,
 					XNAToGL.TextureDataType[(int) format],
 					data
@@ -2932,7 +2955,7 @@ namespace Microsoft.Xna.Framework.Graphics
 				IntPtr texData = Marshal.AllocHGlobal(size * size * elementSizeInBytes);
 				glGetTexImage(
 					GLenum.GL_TEXTURE_CUBE_MAP_POSITIVE_X + (int) cubeMapFace,
-					0,
+					level,
 					glFormat,
 					XNAToGL.TextureDataType[(int) format],
 					texData
@@ -3144,7 +3167,7 @@ namespace Microsoft.Xna.Framework.Graphics
 		) {
 			bool texUnbound = (	currentDrawBuffers != 1 ||
 						currentAttachments[0] != (texture as OpenGLTexture).Handle	);
-			if (texUnbound && !useES2)
+			if (texUnbound && !useES3)
 			{
 				return false;
 			}
@@ -3580,8 +3603,6 @@ namespace Microsoft.Xna.Framework.Graphics
 			}
 
 			int i;
-			uint[] attachments = new uint[renderTargets.Length];
-			GLenum[] attachmentTypes = new GLenum[renderTargets.Length];
 			for (i = 0; i < renderTargets.Length; i += 1)
 			{
 				IGLRenderbuffer colorBuffer = (renderTargets[i].RenderTarget as IRenderTarget).ColorBuffer;
@@ -3605,7 +3626,7 @@ namespace Microsoft.Xna.Framework.Graphics
 			}
 
 			// Update the color attachments, DrawBuffers state
-			for (i = 0; i < attachments.Length; i += 1)
+			for (i = 0; i < renderTargets.Length; i += 1)
 			{
 				if (attachments[i] != currentAttachments[i])
 				{
@@ -3696,10 +3717,10 @@ namespace Microsoft.Xna.Framework.Graphics
 				}
 				i += 1;
 			}
-			if (attachments.Length != currentDrawBuffers)
+			if (renderTargets.Length != currentDrawBuffers)
 			{
-				glDrawBuffers(attachments.Length, drawBuffersArray);
-				currentDrawBuffers = attachments.Length;
+				glDrawBuffers(renderTargets.Length, drawBuffersArray);
+				currentDrawBuffers = renderTargets.Length;
 			}
 
 			// Update the depth/stencil attachment
@@ -3834,7 +3855,8 @@ namespace Microsoft.Xna.Framework.Graphics
 				GLenum.GL_RED,				// SurfaceFormat.HalfSingle
 				GLenum.GL_RG,				// SurfaceFormat.HalfVector2
 				GLenum.GL_RGBA,				// SurfaceFormat.HalfVector4
-				GLenum.GL_RGBA				// SurfaceFormat.HdrBlendable
+				GLenum.GL_RGBA,				// SurfaceFormat.HdrBlendable
+				GLenum.GL_BGRA,				// SurfaceFormat.ColorBgraEXT
 			};
 
 			public static readonly GLenum[] TextureInternalFormat = new GLenum[]
@@ -3858,7 +3880,8 @@ namespace Microsoft.Xna.Framework.Graphics
 				GLenum.GL_R16F,					// SurfaceFormat.HalfSingle
 				GLenum.GL_RG16F,				// SurfaceFormat.HalfVector2
 				GLenum.GL_RGBA16F,				// SurfaceFormat.HalfVector4
-				GLenum.GL_RGBA16F				// SurfaceFormat.HdrBlendable
+				GLenum.GL_RGBA16F,				// SurfaceFormat.HdrBlendable
+				GLenum.GL_RGBA8					// SurfaceFormat.ColorBgraEXT
 			};
 
 			public static readonly GLenum[] TextureDataType = new GLenum[]
@@ -3882,7 +3905,8 @@ namespace Microsoft.Xna.Framework.Graphics
 				GLenum.GL_HALF_FLOAT,				// SurfaceFormat.HalfSingle
 				GLenum.GL_HALF_FLOAT,				// SurfaceFormat.HalfVector2
 				GLenum.GL_HALF_FLOAT,				// SurfaceFormat.HalfVector4
-				GLenum.GL_HALF_FLOAT				// SurfaceFormat.HdrBlendable
+				GLenum.GL_HALF_FLOAT,				// SurfaceFormat.HdrBlendable
+				GLenum.GL_UNSIGNED_BYTE
 			};
 
 			public static readonly GLenum[] BlendMode = new GLenum[]

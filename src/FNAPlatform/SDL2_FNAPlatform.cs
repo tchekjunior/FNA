@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -46,6 +46,16 @@ namespace Microsoft.Xna.Framework
 			 * -flibit
 			 */
 			SDL.SDL_SetMainReady();
+
+			// Also, Windows is an idiot. -flibit
+			if (	OSVersion.Equals("Windows") &&
+				System.Diagnostics.Debugger.IsAttached	)
+			{
+				SDL.SDL_SetHint(
+					SDL.SDL_HINT_WINDOWS_DISABLE_THREAD_NAMING,
+					"1"
+				);
+			}
 
 			// If available, load the SDL_GameControllerDB
 			string mappingsDB = Path.Combine(
@@ -104,8 +114,8 @@ namespace Microsoft.Xna.Framework
 		public static GameWindow CreateWindow()
 		{
 			// GLContext environment variables
-			bool forceES2 = Environment.GetEnvironmentVariable(
-				"FNA_OPENGL_FORCE_ES2"
+			bool forceES3 = Environment.GetEnvironmentVariable(
+				"FNA_OPENGL_FORCE_ES3"
 			) == "1";
 			bool forceCoreProfile = Environment.GetEnvironmentVariable(
 				"FNA_OPENGL_FORCE_CORE_PROFILE"
@@ -124,12 +134,6 @@ namespace Microsoft.Xna.Framework
 				initFlags |= SDL.SDL_WindowFlags.SDL_WINDOW_ALLOW_HIGHDPI;
 			}
 
-			// FIXME: Once we have SDL_SetWindowResizable, remove this. -flibit
-			if (Environment.GetEnvironmentVariable("FNA_WORKAROUND_WINDOW_RESIZABLE") == "1")
-			{
-				initFlags |= SDL.SDL_WindowFlags.SDL_WINDOW_RESIZABLE;
-			}
-
 			SDL.SDL_GL_SetAttribute(SDL.SDL_GLattr.SDL_GL_RED_SIZE, 8);
 			SDL.SDL_GL_SetAttribute(SDL.SDL_GLattr.SDL_GL_GREEN_SIZE, 8);
 			SDL.SDL_GL_SetAttribute(SDL.SDL_GLattr.SDL_GL_BLUE_SIZE, 8);
@@ -137,7 +141,7 @@ namespace Microsoft.Xna.Framework
 			SDL.SDL_GL_SetAttribute(SDL.SDL_GLattr.SDL_GL_DEPTH_SIZE, 24);
 			SDL.SDL_GL_SetAttribute(SDL.SDL_GLattr.SDL_GL_STENCIL_SIZE, 8);
 			SDL.SDL_GL_SetAttribute(SDL.SDL_GLattr.SDL_GL_DOUBLEBUFFER, 1);
-			if (forceES2)
+			if (forceES3)
 			{
 				SDL.SDL_GL_SetAttribute(
 					SDL.SDL_GLattr.SDL_GL_RETAINED_BACKING,
@@ -149,7 +153,7 @@ namespace Microsoft.Xna.Framework
 				);
 				SDL.SDL_GL_SetAttribute(
 					SDL.SDL_GLattr.SDL_GL_CONTEXT_MAJOR_VERSION,
-					2
+					3
 				);
 				SDL.SDL_GL_SetAttribute(
 					SDL.SDL_GLattr.SDL_GL_CONTEXT_MINOR_VERSION,
@@ -212,9 +216,9 @@ namespace Microsoft.Xna.Framework
 
 			return new FNAWindow(
 				window,
-				SDL.SDL_GetDisplayName(
-					SDL.SDL_GetWindowDisplayIndex(window)
-				)
+				@"\\.\DISPLAY" + (
+					SDL.SDL_GetWindowDisplayIndex(window) + 1
+				).ToString()
 			);
 		}
 
@@ -303,8 +307,7 @@ namespace Microsoft.Xna.Framework
 			int displayIndex = 0;
 			for (int i = 0; i < GraphicsAdapter.Adapters.Count; i += 1)
 			{
-				// FIXME: Should be checking Name, not Description! -flibit
-				if (screenDeviceName == GraphicsAdapter.Adapters[i].Description)
+				if (screenDeviceName == GraphicsAdapter.Adapters[i].DeviceName)
 				{
 					displayIndex = i;
 					break;
@@ -387,19 +390,12 @@ namespace Microsoft.Xna.Framework
 
 		public static void SetWindowResizable(IntPtr window, bool resizable)
 		{
-			try
-			{
-				SDL_SetWindowResizable(
-					window,
-					resizable ?
-						SDL.SDL_bool.SDL_TRUE :
-						SDL.SDL_bool.SDL_FALSE
-				);
-			}
-			catch
-			{
-				// No-op. :(
-			}
+			SDL.SDL_SetWindowResizable(
+				window,
+				resizable ?
+					SDL.SDL_bool.SDL_TRUE :
+					SDL.SDL_bool.SDL_FALSE
+			);
 		}
 
 		public static bool GetWindowBorderless(IntPtr window)
@@ -504,16 +500,6 @@ namespace Microsoft.Xna.Framework
 			}
 			return fileIn;
 		}
-
-		/* FIXME: SDL2 bug!
-		 * Right now SDL_SetWindowResizable is not in upstream.
-		 * We've got it in our SDL-mirror for now, but it's not
-		 * available in any official capacity. So, we're mixing the
-		 * environment variable with unofficial work for now.
-		 * -flibit
-		 */
-		[DllImport("SDL2.dll", CallingConvention = CallingConvention.Cdecl)]
-		private static extern void SDL_SetWindowResizable(IntPtr window, SDL.SDL_bool resizable);
 
 		#endregion
 
@@ -917,6 +903,7 @@ namespace Microsoft.Xna.Framework
 						SurfaceFormat.Color // FIXME: Assumption!
 					),
 					new DisplayModeCollection(modes),
+					@"\\.\DISPLAY" + (i + 1).ToString(),
 					SDL.SDL_GetDisplayName(i)
 				);
 			}
@@ -2286,30 +2273,14 @@ namespace Microsoft.Xna.Framework
 		private static unsafe int Win32OnPaint(IntPtr func, IntPtr evtPtr)
 		{
 			SDL.SDL_Event* evt = (SDL.SDL_Event*) evtPtr;
-			if (evt->type == SDL.SDL_EventType.SDL_WINDOWEVENT)
+			if (	evt->type == SDL.SDL_EventType.SDL_WINDOWEVENT &&
+				evt->window.windowEvent == SDL.SDL_WindowEventID.SDL_WINDOWEVENT_EXPOSED	)
 			{
-				if (evt->window.windowEvent == SDL.SDL_WindowEventID.SDL_WINDOWEVENT_RESIZED)
-				{
-					SDL.SDL_SysWMinfo info = new SDL.SDL_SysWMinfo();
-					SDL.SDL_VERSION(out info.version);
-					SDL.SDL_GetWindowWMInfo(
-						SDL.SDL_GetWindowFromID(evt->window.windowID),
-						ref info
-					);
-					InvalidateRect(
-						info.info.win.window,
-						IntPtr.Zero,
-						0
-					);
-				}
-				if (evt->window.windowEvent == SDL.SDL_WindowEventID.SDL_WINDOWEVENT_EXPOSED)
-				{
-					Marshal.GetDelegateForFunctionPointer(
-						func,
-						typeof(QuickDrawFunc)
-					).DynamicInvoke(null);
-					return 0;
-				}
+				Marshal.GetDelegateForFunctionPointer(
+					func,
+					typeof(QuickDrawFunc)
+				).DynamicInvoke(null);
+				return 0;
 			}
 			return 1;
 		}

@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -20,7 +20,7 @@
  * colors indicate a rough percentage of time spent in both Update() and Draw().
  * Blue is Update(), Red is Draw(). There may be time spent in other parts of
  * the frame (usually GraphicsDevice.Present if you're faster than the display's
- * refresh rate), but compares to these two functions, the time spent is likely
+ * refresh rate), but compared to these two functions, the time spent is likely
  * marginal in comparison.
  *
  * If you want _real_ profile data, use a _real_ profiler!
@@ -263,6 +263,7 @@ namespace Microsoft.Xna.Framework
 
 			IsActive = true;
 			IsMouseVisible = false;
+			IsFixedTimeStep = true;
 			TargetElapsedTime = TimeSpan.FromTicks(166667); // 60fps
 			InactiveSleepTime = TimeSpan.FromSeconds(0.02);
 

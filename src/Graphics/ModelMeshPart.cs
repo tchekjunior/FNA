@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -50,7 +50,11 @@ namespace Microsoft.Xna.Framework.Graphics
 
 				// Set the new effect.
 				INTERNAL_effect = value;
-				parent.Effects.Add(value);
+
+				if (INTERNAL_effect != null && !parent.Effects.Contains(INTERNAL_effect))
+				{
+					parent.Effects.Add(value);
+				}
 			}
 		}
 

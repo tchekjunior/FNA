@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -324,7 +324,7 @@ namespace Microsoft.Xna.Framework
 
 		public bool Equals(Plane other)
 		{
-			return ((Normal == other.Normal) && (MathHelper.WithinEpsilon(D, other.D)));
+			return (Normal == other.Normal && D == other.D);
 		}
 
 		public override int GetHashCode()

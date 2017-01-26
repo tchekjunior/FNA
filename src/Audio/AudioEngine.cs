@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -232,16 +232,20 @@ namespace Microsoft.Xna.Framework.Audio
 					int fadeType = instanceFlags & 0x07;
 					int maxBehavior = instanceFlags >> 3;
 
-					// Unknown value
-					reader.ReadUInt16();
+					// Parent Category
+					short parent = reader.ReadInt16();
 
 					// Volume
-					float volume = XACTCalculator.CalculateVolume(reader.ReadByte());
+					float volume = XACTCalculator.CalculateAmplitudeRatio(
+						XACTCalculator.ParseDecibel(
+							reader.ReadByte()
+						)
+					);
 
 					// Visibility Flags, unused
 					reader.ReadByte();
 
-					// Add to the engine list
+					// Add to the engine list and the parent category
 					INTERNAL_categories.Add(
 						new AudioCategory(
 							categoryNames[i],
@@ -253,6 +257,12 @@ namespace Microsoft.Xna.Framework.Audio
 							fadeType
 						)
 					);
+					if (parent != -1)
+					{
+						INTERNAL_categories[parent].subCategories.Add(
+							INTERNAL_categories[i]
+						);
+					}
 				}
 
 				// Obtain the Variable Names

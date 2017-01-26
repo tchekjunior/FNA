@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -47,7 +47,7 @@ namespace Microsoft.Xna.Framework.Audio
 			get
 			{
 				return (	INTERNAL_timer.IsRunning ||
-						INTERNAL_timer.ElapsedTicks > 0	);
+						INTERNAL_timer.ElapsedTicks > 0	) && !IsStopping;
 			}
 		}
 
@@ -67,17 +67,16 @@ namespace Microsoft.Xna.Framework.Audio
 
 		public bool IsStopped
 		{
-			get
-			{
-				return !IsPlaying;
-			}
+			get;
+			private set;
 		}
 
 		public bool IsStopping
 		{
 			get
 			{
-				return INTERNAL_fadeMode == FadeMode.FadeOut;
+				return (	INTERNAL_fadeMode == FadeMode.FadeOut ||
+						INTERNAL_fadeMode == FadeMode.ReleaseRpc	);
 			}
 		}
 
@@ -110,27 +109,27 @@ namespace Microsoft.Xna.Framework.Audio
 		private CueData INTERNAL_data;
 
 		// Current sound and its events
-		private XACTSound INTERNAL_activeSound;
-		private List<XACTEvent> INTERNAL_eventList;
-		private List<bool> INTERNAL_eventPlayed;
-		private Dictionary<XACTEvent, int> INTERNAL_eventLoops;
-		private Dictionary<SoundEffectInstance, XACTEvent> INTERNAL_waveEventSounds;
+		private XACTSoundInstance INTERNAL_activeSound;
+
+		private Dictionary<SoundEffectInstance, PlayWaveEventInstance>
+			INTERNAL_playWaveEventBySound;
 
 		// Used for event timestamps
 		private Stopwatch INTERNAL_timer;
 
 		// Sound list
 		private List<SoundEffectInstance> INTERNAL_instancePool;
-		private List<float> INTERNAL_instanceVolumes;
-		private List<float> INTERNAL_instancePitches;
+		private List<double> INTERNAL_instanceVolumes;
+		private List<short> INTERNAL_instancePitches;
 
 		// RPC data list
 		private List<float> INTERNAL_rpcTrackVolumes;
 		private List<float> INTERNAL_rpcTrackPitches;
+		private ushort INTERNAL_maxRpcReleaseTime;
 
 		// Events can control volume/pitch as well!
-		private float eventVolume;
-		private float eventPitch;
+		internal double eventVolume;
+		internal float eventPitch;
 
 		// User-controlled sounds require a bit more trickery.
 		private bool INTERNAL_userControlledPlaying;
@@ -153,7 +152,8 @@ namespace Microsoft.Xna.Framework.Audio
 		{
 			None,
 			FadeOut,
-			FadeIn
+			FadeIn,
+			ReleaseRpc
 		}
 		private long INTERNAL_fadeStart;
 		private long INTERNAL_fadeEnd;
@@ -189,6 +189,9 @@ namespace Microsoft.Xna.Framework.Audio
 			INTERNAL_data = data;
 			IsPrepared = false;
 			IsPreparing = true;
+
+			INTERNAL_maxRpcReleaseTime = 0;
+
 			foreach (XACTSound curSound in data.Sounds)
 			{
 				if (!curSound.HasLoadedTracks)
@@ -198,9 +201,40 @@ namespace Microsoft.Xna.Framework.Audio
 						waveBankNames
 					);
 				}
+
+				/* Determine the release times per track, if any, to be used to extend
+				 * the sound when playing the release.
+				 */
+				{
+					ushort maxReleaseMS = 0;
+
+					// Loop over tracks.
+					for (int i = 0; i < curSound.RPCCodes.Count; i += 1)
+					{
+						// Loop over curves.
+						foreach (uint curCode in curSound.RPCCodes[i])
+						{
+							RPC curRPC = INTERNAL_baseEngine.INTERNAL_getRPC(curCode);
+							if (!INTERNAL_baseEngine.INTERNAL_isGlobalVariable(curRPC.Variable))
+							{
+								// Only release times applied to volume are considered.
+								if (curRPC.Variable.Equals("ReleaseTime") && curRPC.Parameter == RPCParameter.Volume)
+								{
+									maxReleaseMS = Math.Max((ushort)curRPC.LastPoint.X, maxReleaseMS);
+								}
+							}
+						}
+					}
+
+					// Keep track of the maximum release time to extend the sound.
+					INTERNAL_maxRpcReleaseTime = maxReleaseMS;
+				}
 			}
+
 			IsPrepared = true;
 			IsPreparing = false;
+
+			IsStopped = false;
 
 			INTERNAL_isManaged = managed;
 
@@ -209,22 +243,20 @@ namespace Microsoft.Xna.Framework.Audio
 				data.Category
 			);
 
-			eventVolume = 1.0f;
+			eventVolume = 0.0;
 			eventPitch = 0.0f;
 
 			INTERNAL_userControlledPlaying = false;
 			INTERNAL_isPositional = false;
 
-			INTERNAL_eventList = new List<XACTEvent>();
-			INTERNAL_eventPlayed = new List<bool>();
-			INTERNAL_eventLoops = new Dictionary<XACTEvent, int>();
-			INTERNAL_waveEventSounds = new Dictionary<SoundEffectInstance, XACTEvent>();
+			INTERNAL_playWaveEventBySound =
+				new Dictionary<SoundEffectInstance, PlayWaveEventInstance>();
 
-			INTERNAL_timer =  new Stopwatch();
+			INTERNAL_timer = new Stopwatch();
 
 			INTERNAL_instancePool = new List<SoundEffectInstance>();
-			INTERNAL_instanceVolumes = new List<float>();
-			INTERNAL_instancePitches = new List<float>();
+			INTERNAL_instanceVolumes = new List<double>();
+			INTERNAL_instancePitches = new List<short>();
 
 			INTERNAL_rpcTrackVolumes = new List<float>();
 			INTERNAL_rpcTrackPitches = new List<float>();
@@ -266,6 +298,11 @@ namespace Microsoft.Xna.Framework.Audio
 				}
 				INTERNAL_category.INTERNAL_removeActiveCue(this);
 				IsDisposed = true;
+
+				// IXACTCue* no longer exists, these should all be false
+				IsStopped = false;
+				IsCreated = false;
+				IsPrepared = false;
 			}
 		}
 
@@ -275,7 +312,7 @@ namespace Microsoft.Xna.Framework.Audio
 
 		public void Apply3D(AudioListener listener, AudioEmitter emitter)
 		{
-			if (IsPlaying && !INTERNAL_isPositional)
+			if ((IsPlaying || IsStopping) && !INTERNAL_isPositional)
 			{
 				throw new InvalidOperationException("Apply3D call after Play!");
 			}
@@ -289,14 +326,25 @@ namespace Microsoft.Xna.Framework.Audio
 			}
 			INTERNAL_listener = listener;
 			INTERNAL_emitter = emitter;
+
+			// Set Apply3D-related Variables
+			Vector3 emitterToListener = listener.Position - emitter.Position;
+			float distance = emitterToListener.Length();
+			SetVariable("Distance", distance);
 			SetVariable(
-				"Distance",
-				Vector3.Distance(
-					INTERNAL_emitter.Position,
-					INTERNAL_listener.Position
-				)
+				"DopplerPitchScalar",
+				INTERNAL_calculateDoppler(emitterToListener, distance)
 			);
-			// TODO: DopplerPitchScaler, OrientationAngle
+			SetVariable(
+				"OrientationAngle",
+				MathHelper.ToDegrees((float) Math.Acos(
+					Vector3.Dot(
+						emitterToListener / distance, // Direction...
+						listener.Forward
+					) // Slope...
+				)) // Angle!
+			);
+
 			INTERNAL_isPositional = true;
 		}
 
@@ -334,11 +382,12 @@ namespace Microsoft.Xna.Framework.Audio
 
 		public void Play()
 		{
-			if (IsPlaying)
+			if (IsPlaying || IsStopping)
 			{
 				throw new InvalidOperationException("Cue already playing!");
 			}
 
+			// Instance limiting
 			if (INTERNAL_category.INTERNAL_cueInstanceCount(Name) >= INTERNAL_data.InstanceLimit)
 			{
 				if (INTERNAL_data.MaxCueBehavior == MaxInstanceBehavior.Fail)
@@ -375,6 +424,7 @@ namespace Microsoft.Xna.Framework.Audio
 
 			if (!INTERNAL_category.INTERNAL_addCue(this))
 			{
+				Debug.Assert(false);
 				return;
 			}
 
@@ -390,12 +440,9 @@ namespace Microsoft.Xna.Framework.Audio
 				return;
 			}
 
-			INTERNAL_activeSound.GatherEvents(INTERNAL_eventList);
-			foreach (XACTEvent evt in INTERNAL_eventList)
-			{
-				INTERNAL_eventPlayed.Add(false);
-				INTERNAL_eventLoops.Add(evt, 0);
-			}
+			INTERNAL_activeSound.InitializeClips();
+
+			IsPrepared = false;
 		}
 
 		public void Resume()
@@ -420,6 +467,21 @@ namespace Microsoft.Xna.Framework.Audio
 			{
 				if (name.Equals(curVar.Name))
 				{
+					if (curVar.IsGlobal)
+					{
+						throw new ArgumentException("Global variables cannot be set on a cue instance!");				    
+					}
+
+					if (!curVar.IsPublic)
+					{
+						throw new ArgumentException("Private variables cannot be set!");				    
+					}
+
+					if (curVar.IsReadOnly)
+					{
+						throw new ArgumentException("Readonly variables cannot be set!");  
+					}
+
 					curVar.SetValue(value);
 					return;
 				}
@@ -429,13 +491,23 @@ namespace Microsoft.Xna.Framework.Audio
 
 		public void Stop(AudioStopOptions options)
 		{
-			if (IsPlaying)
+			if (IsPlaying || IsStopping)
 			{
-				if (	options == AudioStopOptions.AsAuthored &&
-					INTERNAL_data.FadeOutMS > 0	)
+				if (!IsPaused)
 				{
-					INTERNAL_startFadeOut(INTERNAL_data.FadeOutMS);
-					return;
+					if (options == AudioStopOptions.AsAuthored)
+					{
+						if (INTERNAL_data.FadeOutMS > 0)
+						{
+							INTERNAL_startFadeOut(INTERNAL_data.FadeOutMS);
+							return;
+						}
+						else if (INTERNAL_maxRpcReleaseTime > 0)
+						{
+							INTERNAL_startReleaseRpc(INTERNAL_maxRpcReleaseTime);
+							return;
+						}
+					}
 				}
 				INTERNAL_timer.Stop();
 				INTERNAL_timer.Reset();
@@ -451,6 +523,8 @@ namespace Microsoft.Xna.Framework.Audio
 				INTERNAL_rpcTrackPitches.Clear();
 				INTERNAL_userControlledPlaying = false;
 				INTERNAL_category.INTERNAL_removeActiveCue(this);
+
+				IsStopped = true;
 
 				// If this is a managed Cue, we're done here.
 				if (INTERNAL_isManaged)
@@ -472,100 +546,6 @@ namespace Microsoft.Xna.Framework.Audio
 				return true;
 			}
 			elapsedFrames += 1;
-
-			// Play events when the timestamp has been hit.
-			for (int i = 0; i < INTERNAL_eventList.Count; i += 1)
-			{
-				if (	!INTERNAL_eventPlayed[i] &&
-					INTERNAL_timer.ElapsedMilliseconds > INTERNAL_eventList[i].Timestamp	)
-				{
-					uint type = INTERNAL_eventList[i].Type;
-					if (type == 1)
-					{
-						PlayWave((PlayWaveEvent) INTERNAL_eventList[i]);
-					}
-					else if (type == 2)
-					{
-						eventVolume = ((SetVolumeEvent) INTERNAL_eventList[i]).GetVolume();
-					}
-					else if (type == 3)
-					{
-						eventPitch = ((SetPitchEvent) INTERNAL_eventList[i]).GetPitch();
-					}
-					else
-					{
-						throw new NotImplementedException("Unhandled XACTEvent type!");
-					}
-					INTERNAL_eventPlayed[i] = true;
-				}
-			}
-
-			// Clear out sound effect instances as they finish
-			for (int i = 0; i < INTERNAL_instancePool.Count; i += 1)
-			{
-				if (INTERNAL_instancePool[i].State == SoundState.Stopped)
-				{
-					// Get the event that spawned this instance...
-					PlayWaveEvent evt = (PlayWaveEvent) INTERNAL_waveEventSounds[INTERNAL_instancePool[i]];
-					float prevVolume = INTERNAL_instanceVolumes[i];
-					float prevPitch = INTERNAL_instancePitches[i];
-
-					// Then delete all the guff
-					INTERNAL_waveEventSounds.Remove(INTERNAL_instancePool[i]);
-					INTERNAL_instancePool[i].Dispose();
-					INTERNAL_instancePool.RemoveAt(i);
-					INTERNAL_instanceVolumes.RemoveAt(i);
-					INTERNAL_instancePitches.RemoveAt(i);
-					INTERNAL_rpcTrackVolumes.RemoveAt(i);
-					INTERNAL_rpcTrackPitches.RemoveAt(i);
-
-					// Increment the loop counter, try to get another loop
-					INTERNAL_eventLoops[evt] += 1;
-					PlayWave(evt, prevVolume, prevPitch);
-
-					// Removed a wave, have to step back...
-					i -= 1;
-				}
-			}
-
-			// Fade in/out
-			float fadePerc = 1.0f;
-			if (INTERNAL_fadeMode != FadeMode.None)
-			{
-				if (INTERNAL_fadeMode == FadeMode.FadeOut)
-				{
-					if (INTERNAL_category.crossfadeType == CrossfadeType.Linear)
-					{
-						fadePerc = (INTERNAL_fadeEnd - (INTERNAL_timer.ElapsedMilliseconds - INTERNAL_fadeStart)) / (float) INTERNAL_fadeEnd;
-					}
-					else
-					{
-						throw new NotImplementedException("Unhandled CrossfadeType!");
-					}
-					if (fadePerc <= 0.0f)
-					{
-						Stop(AudioStopOptions.Immediate);
-						INTERNAL_fadeMode = FadeMode.None;
-						return false;
-					}
-				}
-				else
-				{
-					if (INTERNAL_category.crossfadeType == CrossfadeType.Linear)
-					{
-						fadePerc = INTERNAL_timer.ElapsedMilliseconds / (float) INTERNAL_fadeEnd;
-					}
-					else
-					{
-						throw new NotImplementedException("Unhandled CrossfadeType!");
-					}
-					if (fadePerc > 1.0f)
-					{
-						fadePerc = 1.0f;
-						INTERNAL_fadeMode = FadeMode.None;
-					}
-				}
-			}
 
 			// User control updates
 			if (INTERNAL_data.IsUserControlled)
@@ -592,12 +572,7 @@ namespace Microsoft.Xna.Framework.Audio
 						// Nothing to play, bail.
 						return true;
 					}
-					INTERNAL_activeSound.GatherEvents(INTERNAL_eventList);
-					foreach (XACTEvent evt in INTERNAL_eventList)
-					{
-						INTERNAL_eventPlayed.Add(false);
-						INTERNAL_eventLoops.Add(evt, 0);
-					}
+					INTERNAL_activeSound.InitializeClips();
 					INTERNAL_timer.Stop();
 					INTERNAL_timer.Reset();
 					INTERNAL_timer.Start();
@@ -609,16 +584,131 @@ namespace Microsoft.Xna.Framework.Audio
 				}
 			}
 
+			// Trigger events for each track
+			foreach (XACTClipInstance clip in INTERNAL_activeSound.Clips)
+			{
+				// Play events when the timestamp has been hit.
+				for (int i = 0; i < clip.Events.Count; i += 1)
+				{
+					EventInstance evt = clip.Events[i];
+
+					if (	!evt.Played &&
+						INTERNAL_timer.ElapsedMilliseconds > evt.Timestamp	)
+					{
+						evt.Apply(
+							this,
+							null,
+							INTERNAL_timer.ElapsedMilliseconds / 1000.0f
+						);
+					}
+				}
+			}
+
+
+			// Clear out sound effect instances as they finish
+			for (int i = 0; i < INTERNAL_instancePool.Count; i += 1)
+			{
+				if (INTERNAL_instancePool[i].State == SoundState.Stopped)
+				{
+					// Get the event that spawned this instance...
+					PlayWaveEventInstance evtInstance =
+						INTERNAL_playWaveEventBySound[INTERNAL_instancePool[i]];
+					double prevVolume = INTERNAL_instanceVolumes[i];
+					short prevPitch = INTERNAL_instancePitches[i];
+
+					// Then delete all the guff
+					INTERNAL_playWaveEventBySound.Remove(INTERNAL_instancePool[i]);
+					INTERNAL_instancePool[i].Dispose();
+					INTERNAL_instancePool.RemoveAt(i);
+					INTERNAL_instanceVolumes.RemoveAt(i);
+					INTERNAL_instancePitches.RemoveAt(i);
+					INTERNAL_rpcTrackVolumes.RemoveAt(i);
+					INTERNAL_rpcTrackPitches.RemoveAt(i);
+
+					// Increment the loop counter, try to get another loop
+					evtInstance.LoopCount += 1;
+					PlayWave(evtInstance, prevVolume, prevPitch);
+
+					// Removed a wave, have to step back...
+					i -= 1;
+				}
+			}
+
+			// Fade in/out
+			float fadePerc = 1.0f;
+			if (INTERNAL_fadeMode != FadeMode.None)
+			{
+				if (INTERNAL_fadeMode == FadeMode.FadeOut)
+				{
+					if (INTERNAL_category.crossfadeType == CrossfadeType.Linear)
+					{
+						fadePerc = (
+							INTERNAL_fadeEnd -
+							(
+								INTERNAL_timer.ElapsedMilliseconds -
+								INTERNAL_fadeStart
+							)
+						) / (float) INTERNAL_fadeEnd;
+					}
+					else
+					{
+						throw new NotImplementedException("Unhandled CrossfadeType!");
+					}
+					if (fadePerc <= 0.0f)
+					{
+						Stop(AudioStopOptions.Immediate);
+						INTERNAL_fadeMode = FadeMode.None;
+						return false;
+					}
+				}
+				else if (INTERNAL_fadeMode == FadeMode.FadeIn)
+				{
+					if (INTERNAL_category.crossfadeType == CrossfadeType.Linear)
+					{
+						fadePerc = INTERNAL_timer.ElapsedMilliseconds / (float) INTERNAL_fadeEnd;
+					}
+					else
+					{
+						throw new NotImplementedException("Unhandled CrossfadeType!");
+					}
+					if (fadePerc > 1.0f)
+					{
+						fadePerc = 1.0f;
+						INTERNAL_fadeMode = FadeMode.None;
+					}
+				}
+				else if (INTERNAL_fadeMode == FadeMode.ReleaseRpc)
+				{
+					float releasePerc = (
+						INTERNAL_timer.ElapsedMilliseconds -
+						INTERNAL_fadeStart
+					) / (float) INTERNAL_maxRpcReleaseTime;
+					if (releasePerc > 1.0f)
+					{
+						Stop(AudioStopOptions.Immediate);
+						INTERNAL_fadeMode = FadeMode.None;
+						return false;
+					}
+				}
+				else
+				{
+					throw new NotImplementedException("Unsupported FadeMode!");
+				}
+			}
+
 			// If everything has been played and finished, we're done here.
 			if (INTERNAL_instancePool.Count == 0)
 			{
 				bool allPlayed = true;
-				foreach (bool played in INTERNAL_eventPlayed)
+				foreach (XACTClipInstance clipInstance in INTERNAL_activeSound.Clips)
 				{
-					if (!played)
+					foreach (EventInstance evt in clipInstance.Events)
 					{
-						allPlayed = false;
-						break;
+						if (!evt.Played)
+						{
+							allPlayed = false;
+							break;
+						}
 					}
 				}
 				if (allPlayed)
@@ -634,16 +724,22 @@ namespace Microsoft.Xna.Framework.Audio
 						INTERNAL_timer.Reset();
 						INTERNAL_category.INTERNAL_removeActiveCue(this);
 					}
-					return INTERNAL_userControlledPlaying;
+					if (INTERNAL_userControlledPlaying)
+					{
+						// We're "still" "playing" right now...
+						return true;
+					}
+					IsStopped = true;
+					return false;
 				}
 			}
 
 			// RPC updates
-			float rpcVolume = 1.0f;
+			float rpcVolume = 0.0f;
 			float rpcPitch = 0.0f;
 			float hfGain = 1.0f;
 			float lfGain = 1.0f;
-			for (int i = 0; i < INTERNAL_activeSound.RPCCodes.Count; i += 1)
+			for (int i = 0; i < INTERNAL_activeSound.Sound.RPCCodes.Count; i += 1)
 			{
 				if (i > INTERNAL_instancePool.Count)
 				{
@@ -651,16 +747,35 @@ namespace Microsoft.Xna.Framework.Audio
 				}
 				if (i > 0)
 				{
-					INTERNAL_rpcTrackVolumes[i - 1] = 1.0f;
+					INTERNAL_rpcTrackVolumes[i - 1] = 0.0f;
 					INTERNAL_rpcTrackPitches[i - 1] = 0.0f;
 				}
-				foreach (uint curCode in INTERNAL_activeSound.RPCCodes[i])
+				foreach (uint curCode in INTERNAL_activeSound.Sound.RPCCodes[i])
 				{
 					RPC curRPC = INTERNAL_baseEngine.INTERNAL_getRPC(curCode);
 					float result;
 					if (!INTERNAL_baseEngine.INTERNAL_isGlobalVariable(curRPC.Variable))
 					{
-						result = curRPC.CalculateRPC(GetVariable(curRPC.Variable));
+						float variableValue = GetVariable(curRPC.Variable);
+
+						if (curRPC.Variable.Equals("AttackTime"))
+						{
+							PlayWaveEvent playWaveEvent =
+								(PlayWaveEvent) INTERNAL_activeSound.Sound.INTERNAL_clips[i].Events[0];
+
+							long elapsedFromPlay = INTERNAL_timer.ElapsedMilliseconds
+								- playWaveEvent.Timestamp;
+							variableValue = elapsedFromPlay;
+						}
+						else if (curRPC.Variable.Equals("ReleaseTime"))
+						{
+							if (INTERNAL_fadeMode == FadeMode.ReleaseRpc)
+							{
+								long elapsedFromStop = INTERNAL_timer.ElapsedMilliseconds - INTERNAL_fadeStart;
+								variableValue = elapsedFromStop;
+							}
+						}
+						result = curRPC.CalculateRPC(variableValue);
 					}
 					else
 					{
@@ -673,19 +788,18 @@ namespace Microsoft.Xna.Framework.Audio
 					}
 					if (curRPC.Parameter == RPCParameter.Volume)
 					{
-						float vol = XACTCalculator.CalculateAmplitudeRatio(result / 100.0);
 						if (i == 0)
 						{
-							rpcVolume *= vol;
+							rpcVolume += result;
 						}
 						else
 						{
-							INTERNAL_rpcTrackVolumes[i - 1] *= vol;
+							INTERNAL_rpcTrackVolumes[i - 1] += result;
 						}
 					}
 					else if (curRPC.Parameter == RPCParameter.Pitch)
 					{
-						float pitch = result / 1000.0f;
+						float pitch = result;
 						if (i == 0)
 						{
 							rpcPitch += pitch;
@@ -712,7 +826,9 @@ namespace Microsoft.Xna.Framework.Audio
 					}
 					else
 					{
-						throw new NotImplementedException("RPC Parameter Type: " + curRPC.Parameter.ToString());
+						throw new NotImplementedException(
+							"RPC Parameter Type: " + curRPC.Parameter.ToString()
+						);
 					}
 				}
 			}
@@ -721,26 +837,26 @@ namespace Microsoft.Xna.Framework.Audio
 			for (int i = 0; i < INTERNAL_instancePool.Count; i += 1)
 			{
 				/* The final volume should be the combination of the
-				 * authored volume, category volume, RPC/Event volumes, and fade.
+				 * authored volume, category volume, RPC Track volume, 
+				 * Event volumes, and fade.
 				 */
-				INTERNAL_instancePool[i].Volume = (
-					INTERNAL_instanceVolumes[i] *
-					INTERNAL_category.INTERNAL_volume.Value *
-					rpcVolume *
-					INTERNAL_rpcTrackVolumes[i] *
-					eventVolume *
-					fadePerc
-				);
+				INTERNAL_instancePool[i].Volume = XACTCalculator.CalculateAmplitudeRatio(
+					INTERNAL_instanceVolumes[i] +
+					(i == 0 ? rpcVolume : INTERNAL_rpcTrackVolumes[i - 1]) +
+					eventVolume
+				) * INTERNAL_category.INTERNAL_volume.Value * fadePerc;
 
 				/* The final pitch should be the combination of the
-				 * authored pitch and RPC/Event pitch results.
+				 * authored pitch, RPC Track pitch, and Event pitch.
+				 *
+				 * XACT uses -1200 to 1200 (+/- 12 semitones),
+				 * XNA uses -1.0f to 1.0f (+/- 1 octave).
 				 */
 				INTERNAL_instancePool[i].Pitch = (
 					INTERNAL_instancePitches[i] +
-					rpcPitch +
-					eventPitch +
-					INTERNAL_rpcTrackPitches[i]
-				);
+					(i == 0 ? rpcPitch : INTERNAL_rpcTrackPitches[i - 1]) +
+					eventPitch
+				) / 1200.0f;
 
 				/* The final filter is determined by the instance's filter type,
 				 * in addition to our calculation of the HF/LF gain values.
@@ -787,9 +903,9 @@ namespace Microsoft.Xna.Framework.Audio
 
 		internal float INTERNAL_calculateVolume()
 		{
-			float retval = 1.0f;
-			for (int i = 0; i < INTERNAL_activeSound.RPCCodes.Count; i += 1)
-			foreach (uint curCode in INTERNAL_activeSound.RPCCodes[i])
+			float retval = 0.0f;
+			for (int i = 0; i < INTERNAL_activeSound.Sound.RPCCodes.Count; i += 1)
+			foreach (uint curCode in INTERNAL_activeSound.Sound.RPCCodes[i])
 			{
 				RPC curRPC = INTERNAL_baseEngine.INTERNAL_getRPC(curCode);
 				if (curRPC.Parameter != RPCParameter.Volume)
@@ -799,7 +915,22 @@ namespace Microsoft.Xna.Framework.Audio
 				float result;
 				if (!INTERNAL_baseEngine.INTERNAL_isGlobalVariable(curRPC.Variable))
 				{
-					result = curRPC.CalculateRPC(GetVariable(curRPC.Variable));
+					float variableValue = GetVariable(curRPC.Variable);
+
+					if (curRPC.Variable.Equals("AttackTime"))
+					{
+						long elapsedFromPlay = INTERNAL_timer.ElapsedMilliseconds;
+						variableValue = elapsedFromPlay;
+					}
+					else if (curRPC.Variable.Equals("ReleaseTime"))
+					{
+						if (INTERNAL_fadeMode == FadeMode.ReleaseRpc)
+						{
+							long elapsedFromStop = INTERNAL_timer.ElapsedMilliseconds - INTERNAL_fadeStart;
+							variableValue = elapsedFromStop;
+						}
+					}
+					result = curRPC.CalculateRPC(variableValue);
 				}
 				else
 				{
@@ -810,7 +941,7 @@ namespace Microsoft.Xna.Framework.Audio
 						)
 					);
 				}
-				retval *= XACTCalculator.CalculateAmplitudeRatio(result / 100.0);
+				retval += result;
 			}
 			return retval;
 		}
@@ -824,9 +955,21 @@ namespace Microsoft.Xna.Framework.Audio
 
 		internal void INTERNAL_startFadeOut(ushort ms)
 		{
+			if (INTERNAL_fadeMode == FadeMode.FadeOut)
+			{
+				return; // Already in the middle of something...
+			}
 			INTERNAL_fadeStart = INTERNAL_timer.ElapsedMilliseconds;
 			INTERNAL_fadeEnd = ms;
 			INTERNAL_fadeMode = FadeMode.FadeOut;
+			INTERNAL_category.INTERNAL_moveToDying(this);
+		}
+
+		internal void INTERNAL_startReleaseRpc(ushort ms)
+		{
+			INTERNAL_fadeStart = INTERNAL_timer.ElapsedMilliseconds;
+			INTERNAL_fadeEnd = ms;
+			INTERNAL_fadeMode = FadeMode.ReleaseRpc;
 		}
 
 		#endregion
@@ -836,10 +979,7 @@ namespace Microsoft.Xna.Framework.Audio
 		private bool INTERNAL_calculateNextSound()
 		{
 			INTERNAL_activeSound = null;
-			INTERNAL_eventList.Clear();
-			INTERNAL_eventPlayed.Clear();
-			INTERNAL_eventLoops.Clear();
-			INTERNAL_waveEventSounds.Clear();
+			INTERNAL_playWaveEventBySound.Clear();
 
 			// Pick a sound based on a Cue instance variable
 			if (INTERNAL_data.IsUserControlled)
@@ -862,7 +1002,7 @@ namespace Microsoft.Xna.Framework.Audio
 					if (	INTERNAL_controlledValue <= INTERNAL_data.Probabilities[i, 0] &&
 						INTERNAL_controlledValue >= INTERNAL_data.Probabilities[i, 1]	)
 					{
-						INTERNAL_activeSound = INTERNAL_data.Sounds[i];
+						INTERNAL_activeSound = new XACTSoundInstance(INTERNAL_data.Sounds[i]);
 						return true;
 					}
 				}
@@ -889,7 +1029,7 @@ namespace Microsoft.Xna.Framework.Audio
 			{
 				if (next > max - (INTERNAL_data.Probabilities[i, 0] - INTERNAL_data.Probabilities[i, 1]))
 				{
-					INTERNAL_activeSound = INTERNAL_data.Sounds[i];
+					INTERNAL_activeSound = new XACTSoundInstance(INTERNAL_data.Sounds[i]);
 					break;
 				}
 				max -= INTERNAL_data.Probabilities[i, 0] - INTERNAL_data.Probabilities[i, 1];
@@ -898,14 +1038,25 @@ namespace Microsoft.Xna.Framework.Audio
 			return true;
 		}
 
-		private void PlayWave(PlayWaveEvent evt, float? prevVolume = null, float? prevPitch = null)
-		{
+		internal void PlayWave(
+			EventInstance eventInstance,
+			double? prevVolume = null,
+			short? prevPitch = null
+		) {
+			PlayWaveEventInstance playWaveEventInstance =
+				(PlayWaveEventInstance) eventInstance;
+			PlayWaveEvent evt = (PlayWaveEvent) eventInstance.Event;
+
+			double finalVolume;
+			short finalPitch;
 			SoundEffectInstance sfi = evt.GenerateInstance(
-				INTERNAL_activeSound.Volume,
-				INTERNAL_activeSound.Pitch,
-				INTERNAL_eventLoops[evt],
+				INTERNAL_activeSound.Sound.Volume,
+				INTERNAL_activeSound.Sound.Pitch,
+				playWaveEventInstance.LoopCount,
 				prevVolume,
-				prevPitch
+				prevPitch,
+				out finalVolume,
+				out finalPitch
 			);
 			if (sfi != null)
 			{
@@ -913,7 +1064,7 @@ namespace Microsoft.Xna.Framework.Audio
 				{
 					sfi.Apply3D(INTERNAL_listener, INTERNAL_emitter);
 				}
-				foreach (uint curDSP in INTERNAL_activeSound.DSPCodes)
+				foreach (uint curDSP in INTERNAL_activeSound.Sound.DSPCodes)
 				{
 					// FIXME: This only applies the last DSP!
 					sfi.INTERNAL_applyReverb(
@@ -921,15 +1072,330 @@ namespace Microsoft.Xna.Framework.Audio
 					);
 				}
 				INTERNAL_instancePool.Add(sfi);
-				INTERNAL_instanceVolumes.Add(sfi.Volume);
-				INTERNAL_instancePitches.Add(sfi.Pitch);
-				INTERNAL_waveEventSounds.Add(sfi, evt);
-				INTERNAL_rpcTrackVolumes.Add(1.0f);
+				INTERNAL_instanceVolumes.Add(finalVolume);
+				INTERNAL_instancePitches.Add(finalPitch);
+
+				INTERNAL_playWaveEventBySound.Add(sfi, playWaveEventInstance);
+				INTERNAL_rpcTrackVolumes.Add(0.0f);
 				INTERNAL_rpcTrackPitches.Add(0.0f);
 				sfi.Play();
 			}
 		}
 
+		private float INTERNAL_calculateDoppler(Vector3 emitterToListener, float distance)
+		{
+			/* Adapted from algorithm published as a part of the webaudio specification:
+			 * https://dvcs.w3.org/hg/audio/raw-file/tip/webaudio/specification.html#Spatialization-doppler-shift
+			 * -Chad
+			 */
+
+			float dopplerShift = 1.0f;
+
+			float dopplerFactor = INTERNAL_emitter.DopplerScale;
+			if (dopplerFactor > 0.0f)
+			{
+				float speedOfSound = INTERNAL_baseEngine.GetGlobalVariable("SpeedOfSound");
+				float scaledSpeedOfSound = speedOfSound / dopplerFactor;
+
+				// Project the velocities along the emitter to listener vector.
+				float projectedListenerVelocity = Vector3.Dot(
+					emitterToListener,
+					INTERNAL_listener.Velocity
+				) / distance;
+				float projectedEmitterVelocity = Vector3.Dot(
+					emitterToListener,
+					INTERNAL_emitter.Velocity
+				) / distance;
+
+				// Clamp to the speed of the medium.
+				projectedListenerVelocity = Math.Min(
+					projectedListenerVelocity,
+					scaledSpeedOfSound
+				);
+				projectedEmitterVelocity = Math.Min(
+					projectedEmitterVelocity,
+					scaledSpeedOfSound
+				);
+
+				// Apply doppler effect.
+				dopplerShift = (
+					speedOfSound - dopplerFactor * projectedListenerVelocity
+				) / (
+					speedOfSound - dopplerFactor * projectedEmitterVelocity
+				);
+				if (float.IsNaN(dopplerShift))
+				{
+					dopplerShift = 1.0f;
+				}
+
+				// Limit the pitch shifting to 2 octaves up and 1 octaves down per XACT behavior.
+				dopplerShift = MathHelper.Clamp(dopplerShift, 0.5f, 4.0f);
+			}
+
+			return dopplerShift;
+		}
+
 		#endregion
+	}
+
+	internal class XACTSoundInstance
+	{
+		public readonly XACTSound Sound;
+		public readonly List<XACTClipInstance> Clips = new List<XACTClipInstance>();
+
+		public XACTSoundInstance(XACTSound sound)
+		{
+			Sound = sound;
+		}
+
+		internal void InitializeClips()
+		{
+			// Create clip instances for each clip (track).
+			foreach (XACTClip curClip in Sound.INTERNAL_clips)
+			{
+				XACTClipInstance clipInstance = new XACTClipInstance(curClip);
+				Clips.Add(clipInstance);
+			}
+		}
+	}
+
+	internal class XACTClipInstance
+	{
+		public readonly XACTClip Clip;
+		public readonly List<EventInstance> Events = new List<EventInstance>();
+
+		public XACTClipInstance(XACTClip clip)
+		{
+			Clip = clip;
+
+			// Create event instances for each event.
+			foreach (XACTEvent evt in Clip.Events)
+			{
+				// TODO: How best to eliminate this switch? Factory template method? Table of delegates?
+				EventInstance eventInstance = null;
+				if (evt is PlayWaveEvent)
+				{
+					eventInstance = new PlayWaveEventInstance((PlayWaveEvent) evt);
+				}
+				else if (evt is StopEvent)
+				{
+					eventInstance = new StopEventInstance((StopEvent) evt);
+				}
+				else if (evt is SetValueEvent)
+				{
+					eventInstance = new SetValueEventInstance((SetValueEvent) evt);
+				}
+				else if (evt is SetRandomValueEvent)
+				{
+					eventInstance = new SetRandomValueEventInstance((SetRandomValueEvent) evt);
+				}
+				else if (evt is SetRampValueEvent)
+				{
+					eventInstance = new SetRampValueEventInstance((SetRampValueEvent) evt);
+				}
+				else if (evt is MarkerEvent)
+				{
+					eventInstance = new MarkerEventInstance((MarkerEvent) evt);
+				}
+
+				Debug.Assert(eventInstance != null);
+				Events.Add(eventInstance);
+			}
+		}
+	}
+
+	internal abstract class EventInstance
+	{
+		public readonly XACTEvent Event;
+		public float Timestamp;
+		public int LoopCount;
+		public bool Played;
+
+		public EventInstance(XACTEvent evt)
+		{
+			Event = evt;
+			Timestamp = (
+				Event.Timestamp +
+				XACTEvent.Random.Next(0, Event.RandomOffset)
+			);
+			LoopCount = Event.LoopCount;
+			Played = false;
+		}
+
+		public abstract void Apply(Cue cue, XACTClip track, float elapsedTime);
+
+		protected void HandleRepeating()
+		{
+			if (LoopCount > 0)
+			{
+				// If not set to infinite looping.
+				if (Event.LoopCount != 65535)
+				{
+					LoopCount = LoopCount - 1;
+				}
+
+				// FIXME: Use Frequency Units (Seconds / Beats per Minute) instead of constant of seconds.
+				Timestamp = Timestamp + Event.Frequency * 1000.0f;
+			}
+			else
+			{
+				Played = true;
+			}
+		}
+	}
+
+	internal class PlayWaveEventInstance : EventInstance
+	{
+		public PlayWaveEventInstance(PlayWaveEvent evt)
+			: base(evt)
+		{
+		}
+
+		public override void Apply(Cue cue, XACTClip track, float elapsedTime)
+		{
+			// Only actually play if we are not in the process of stopping.
+			if (!cue.IsStopping)
+			{
+				cue.PlayWave(this);
+			}
+			Played = true;
+		}
+	}
+
+	internal class StopEventInstance : EventInstance
+	{
+		public StopEventInstance(StopEvent evt)
+			: base(evt)
+		{
+		}
+
+		public override void Apply(Cue cue, XACTClip track, float elapsedTime)
+		{
+			StopEvent evt = (StopEvent) Event;
+
+			AudioStopOptions stopOptions = evt.StopOptions;
+
+			switch (evt.Scope)
+			{
+				case XACTClip.StopEventScope.Cue:
+					cue.Stop(stopOptions);
+					break;
+				case XACTClip.StopEventScope.Track:
+					/* FIXME: Need to stop this and ONLY this track
+					 * track.Stop(stopOptions);
+					 */
+					break;
+			}
+
+			Played = true;
+		}
+	}
+
+	internal class SetValueEventInstance : EventInstance
+	{
+		public SetValueEventInstance(SetValueEvent evt)
+			: base(evt)
+		{
+		}
+
+		public override void Apply(Cue cue, XACTClip track, float elapsedTime)
+		{
+			SetValueEvent evt = (SetValueEvent) Event;
+			switch (evt.Property)
+			{
+				case CueProperty.Volume:
+					cue.eventVolume = evt.GetVolume(cue.eventVolume);
+					break;
+				case CueProperty.Pitch:
+					cue.eventPitch = evt.GetPitch(cue.eventPitch);
+					break;
+			}
+
+			HandleRepeating();
+		}
+	}
+
+	internal class SetRandomValueEventInstance : EventInstance
+	{
+		public SetRandomValueEventInstance(SetRandomValueEvent evt)
+			: base(evt)
+		{
+		}
+
+		public override void Apply(Cue cue, XACTClip track, float elapsedTime)
+		{
+			SetRandomValueEvent evt = (SetRandomValueEvent) Event;
+			switch (evt.Property)
+			{
+				case CueProperty.Volume:
+					cue.eventVolume = evt.GetVolume(cue.eventVolume);
+					break;
+				case CueProperty.Pitch:
+					cue.eventPitch = evt.GetPitch(cue.eventPitch);
+					break;
+			}
+
+			HandleRepeating();
+		}
+	}
+
+	internal class SetRampValueEventInstance : EventInstance
+	{
+		public SetRampValueEventInstance(SetRampValueEvent evt)
+			: base(evt)
+		{
+		}
+
+		public override void Apply(Cue cue, XACTClip track, float elapsedTime)
+		{
+			SetRampValueEvent evt = (SetRampValueEvent) Event;
+			if (elapsedTime <= Timestamp / 1000.0f + evt.Duration)
+			{
+				switch (evt.Property)
+				{
+					case CueProperty.Volume:
+						cue.eventVolume = GetValue(evt, elapsedTime);
+						break;
+					case CueProperty.Pitch:
+						cue.eventPitch = GetValue(evt, elapsedTime);
+						break;
+				}
+			}
+			else
+			{
+				HandleRepeating();
+			}
+		}
+
+		private float GetValue(SetRampValueEvent x, float elapsedTime)
+		{
+			// Number of slices to break up the duration.
+			const float slices = 10;
+			float endValue = x.InitialSlope * x.Duration * slices + x.InitialValue;
+
+			// FIXME: Incorporate 2nd derivative into the interpolated pitch.
+
+			float amount = MathHelper.Clamp(
+				(elapsedTime - Timestamp / 1000.0f) / x.Duration,
+				0.0f,
+				1.0f
+			);
+			return MathHelper.Lerp(x.InitialValue, endValue, amount);
+		}
+	}
+
+	internal class MarkerEventInstance : EventInstance
+	{
+		public MarkerEventInstance(MarkerEvent evt)
+			: base(evt)
+		{
+		}
+
+		public override void Apply(Cue cue, XACTClip track, float elapsedTime)
+		{
+			// FIXME: Implement action for a marker event. Some kind of callback?
+
+			HandleRepeating();
+		}
 	}
 }

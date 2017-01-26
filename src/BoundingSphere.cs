@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -297,8 +297,8 @@ namespace Microsoft.Xna.Framework
 		/// <returns><c>true</c> if the instances are equal; <c>false</c> otherwise.</returns>
 		public bool Equals(BoundingSphere other)
 		{
-			return (	this.Center == other.Center &&
-					MathHelper.WithinEpsilon(this.Radius, other.Radius)	);
+			return (	Center == other.Center &&
+					Radius == other.Radius	);
 		}
 
 		#endregion

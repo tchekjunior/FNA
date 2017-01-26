@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -52,7 +52,7 @@ namespace Microsoft.Xna.Framework.Audio
 		IALBuffer ConvertStereoToMono(IALBuffer buffer);
 
 		IALSource GenSource();
-		IALSource GenSource(IALBuffer buffer);
+		IALSource GenSource(IALBuffer buffer, bool isXACT);
 		void StopAndDisposeSource(IALSource source);
 		void PlaySource(IALSource source);
 		void PauseSource(IALSource source);

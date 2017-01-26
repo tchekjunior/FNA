@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -17,6 +17,13 @@ namespace Microsoft.Xna.Framework.Audio
 {
 	internal static class AudioDevice
 	{
+		#region Public Constants
+
+		// Per XAudio2. Yes, it's seriously this high. -flibit
+		public const float MAX_GAIN_VALUE = 16777216.0f;
+
+		#endregion
+
 		#region SoundEffect Master Properties
 
 		private static float INTERNAL_masterVolume = 1.0f;

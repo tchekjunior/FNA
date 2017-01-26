@@ -1,6 +1,6 @@
 #region License
 /* FNA - XNA4 Reimplementation for Desktop Platforms
- * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ * Copyright 2009-2017 Ethan Lee and the MonoGame Team
  *
  * Released under the Microsoft Public License.
  * See LICENSE for details.
@@ -9,6 +9,7 @@
 
 #region Using Statements
 using System;
+using System.Collections.Generic;
 
 using Microsoft.Xna.Framework.Graphics;
 #endregion
@@ -283,7 +284,7 @@ namespace Microsoft.Xna.Framework
 				gdi.PresentationParameters.IsFullScreen
 			);
 			game.Window.EndScreenDeviceChange(
-				gdi.Adapter.Description, // FIXME: Should be Name! -flibit
+				gdi.Adapter.DeviceName,
 				gdi.PresentationParameters.BackBufferWidth,
 				gdi.PresentationParameters.BackBufferHeight
 			);
@@ -351,6 +352,24 @@ namespace Microsoft.Xna.Framework
 			{
 				PreparingDeviceSettings(sender, args);
 			}
+		}
+
+		protected virtual bool CanResetDevice(
+			GraphicsDeviceInformation newDeviceInfo
+		) {
+			throw new NotImplementedException();
+		}
+
+		protected virtual GraphicsDeviceInformation FindBestDevice(
+			bool anySuitableDevice
+		) {
+			throw new NotImplementedException();
+		}
+
+		protected virtual void RankDevices(
+			List<GraphicsDeviceInformation> foundDevices
+		) {
+			throw new NotImplementedException();
 		}
 
 		#endregion
